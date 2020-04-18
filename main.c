@@ -1,104 +1,143 @@
 
-#include <stdlib.h>
+#include <sys/types.h>
 #include <libgte.h>
 #include <libgpu.h>
 #include <libgs.h>
-#include <libmath.h>
-
 #include "constants.h"
-#include "controller.h"
+#include "wall.h"
 
-const int START_X = 160, START_Y = 128;
+#define SCREEN_WIDTH    320
+#define SCREEN_HEIGHT   256
+#define SCREEN_Z        512
+#define VIDEO_TYPE      *(char *)0xBFC7FF52=='E'
 
-float angle, c_ang, s_ang;
-float px, py;
-float lx1, ly1, lx2, ly2;
-float tx1, ty1, tx2, ty2, tz1, tz2;
-Line player;
-Line line;
+typedef struct {
+	DISPENV disp;
+	DRAWENV draw;
+	SVECTOR x[4];
+	u_long tag;
+	POLY_FT4 shape;
+} OT_ELEMENT;
 
-void initialize();
-void update();
-void display();
-void moveSurroundings();
+static void init(int x, int y, int z);
+static void init_polygon(OT_ELEMENT* polygen, int x1, int y1, int x2, int y2);
+static u_short init_tim();
+static void set_primatives();
+static void clearVRAM();
+static void display();
 
 int main() {
-	initialize();
-	
-	while(1) {
-		draw();
-		update();
-		moveSurroundings();
+	OT_ELEMENT polygon[2]; // Init. polygon elements
+	OT_ELEMENT* poly_ref;  // Create reference variable
+	long p, flag;
+	int i, j;
+
+	init((SCREEN_WIDTH / 2), (SCREEN_HEIGHT / 2), SCREEN_Z);
+
+	// Initialise both elements and set DRAW and DISP coordinates
+	for(i = 0; i <= 1; i++) {
+		j = i+1;
+		SetDefDrawEnv(&polygon[i].draw, 0, ((1 % j) * SCREEN_HEIGHT), SCREEN_WIDTH, SCREEN_HEIGHT);
+		SetDefDispEnv(&polygon[i].disp, 0, ((j % 2) * SCREEN_HEIGHT), SCREEN_WIDTH, SCREEN_HEIGHT);
+		init_polygon(&polygon[i], -64, -64, 64, 64);
+		polygon[i].shape.tpage = init_tim();
+	}
+
+	set_primatives();
+	SetDispMask(1); // Show display
+
+	while (1) {
+
+		// Swap buffer pointer
+		if (poly_ref != polygon) poly_ref = polygon;
+		else poly_ref++;
+
+		// Reinitialise OT array
+		ClearOTag(&poly_ref->tag, 1);
+
+		// Poly's texture coords within the selected TPage
+		setUVWH(&poly_ref->shape, 0, 0, 128, 128);
+
+		// Transform perspective
+		RotTransPers(&poly_ref->x[0], (long *)&poly_ref->shape.x0, &p, &flag);
+		RotTransPers(&poly_ref->x[1], (long *)&poly_ref->shape.x1, &p, &flag);
+		RotTransPers(&poly_ref->x[2], (long *)&poly_ref->shape.x2, &p, &flag);
+		RotTransPers(&poly_ref->x[3], (long *)&poly_ref->shape.x3, &p, &flag);
+
+		// Add polygon to OT
+		AddPrim(&poly_ref->tag, &poly_ref->shape);
 		display();
-	}
-	
-	return 0;
-}
 
-void initialize() {
-	initializeScreen();
-	initializePad();
-	initializeDebugFont();
-	setBackgroundColor(createColor(0,0,0));
-	
-	// Set intial coordinates of the player
-	angle = 0;
-	px = START_X;
-	py = START_Y;
-	
-	lx1 = START_X + 20;
-	ly1 = START_Y - 30;
-	lx2 = START_X + 20;
-	ly2 = START_Y + 30;
-	
-	player = createLine(createColor(255,255,255), px, py, px, py-5);
-	line = createLine(createColor(255,255,255), lx1, ly1, lx2, ly2);
-}
+		// Switch buffer
+		PutDrawEnv(&poly_ref->draw);
+		PutDispEnv(&poly_ref->disp);
 
-void update() {
-	padUpdate();
-
-    // Direction buttons
-    if (padCheck(Pad1Up)) {
-		px = px + (c_ang*5);
-		py = py + (s_ang*5);
-	}
-    if (padCheck(Pad1Down)) {
-		px = px - (c_ang*5);
-		py = py - (s_ang*5);
-	}
-	
-	// Turning buttons
-	if (padCheck(Pad1Square)) {
-		angle = angle - 0.2;
-	}
-	if (padCheck(Pad1Circle)) {
-		angle = angle + 0.2;
+		// Draw each element
+		DrawOTag(&poly_ref->tag);
 	}
 }
 
-void moveSurroundings() {
-	c_ang = cos(angle);
-	s_ang = sin(angle);
+static void init(int x, int y, int z) {
 	
-	// Transform vertexes relative to the player
-	tx1 = lx1 - px;
-	ty1 = ly1 - py;
-	tx2 = lx2 - px;
-	ty2 = ly2 - py;
-	
-	// Rotate them around the player
-	tz1 = (tx1 * c_ang) + (ty1 * s_ang);
-	tz2 = (tx2 * c_ang) + (ty2 * s_ang);
-	tx1 = (tx1 * s_ang) - (ty1 * c_ang);
-	tx2 = (tx2 * s_ang) - (ty2 * c_ang);
-	
-	line = moveLine(line, (START_X - tx1), (START_Y - tz1), (START_X - tx2), (START_Y - tz2));
-	
+	// Initialize hardware and geometry system
+	ResetCallback();
+	ResetGraph(0);
+	InitGeom();
+	clearVRAM();
+	SetVideoMode(VIDEO_TYPE);
+
+	GsInitGraph(SCREEN_WIDTH, SCREEN_HEIGHT, GsINTER|GsOFSGPU, 1, 1);
+	SetGeomOffset(x, y);
+	SetGeomScreen(z);
 }
 
-void draw() {
-	drawLine(player);
-	drawLine(line);
+static void init_polygon(OT_ELEMENT* polygon, int x1, int y1, int x2, int y2) {
+
+	setVector(&polygon->x[0], x1, y1, 0);
+	setVector(&polygon->x[1], x2, y1, 0);
+	setVector(&polygon->x[2], x1, y2, 0);
+	setVector(&polygon->x[3], x2, y2, 0);
+
+	setRGB0(&polygon->draw, 0, 0, 0);
+	SetPolyFT4(&polygon->shape);
+	SetShadeTex(&polygon->shape, 2);
 }
 
+static u_short init_tim() {
+
+	RECT rect;
+	GsIMAGE image;
+
+	// Skip image ID and version by incrementing pointer by 0x04
+	GsGetTimInfo((u_long *)(wall+4), &image);
+
+	// Load pattern into VRAM
+	rect.x = image.px; rect.y = image.py;
+	rect.w = image.pw; rect.h = image.ph;
+	LoadImage(&rect, image.pixel);
+
+	// Return TPage
+	return GetTPage(image.pmode, 1, image.px, image.py);
+}
+
+// Sets rotation and translation matricies
+static void set_primatives() {
+
+	// SEt rotation angle, translation vector and buffer matrix
+	static SVECTOR ang = {0, 0, 0};
+	static VECTOR vec = {0, 0, 1024};
+	static MATRIX m;
+
+	RotMatrix(&ang, &m);
+	TransMatrix(&m, &vec);
+	SetRotMatrix(&m);
+	SetTransMatrix(&m);
+}
+
+static void clearVRAM() {
+
+	RECT rectTL;
+	setRECT(&rectTL, 0, 0, 1024, 512);
+	ClearImage2(&rectTL, 0, 0, 0);
+	display();
+}
