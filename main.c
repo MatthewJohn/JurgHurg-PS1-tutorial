@@ -19,10 +19,21 @@ typedef struct {
 	POLY_FT4 shape;
 } OT_ELEMENT;
 
+// Guessing at this, as the video did not cover it
+typedef struct {
+	VECTOR pos;
+	SVECTOR ang;
+	MATRIX m;
+	float pan;
+} CAMERA;
+
+static CAMERA cam = {0};
+
 static void init(int x, int y, int z);
 static void init_polygon(OT_ELEMENT* polygen, int x1, int y1, int x2, int y2);
 static u_short init_tim();
-static void set_primatives();
+static void set_primatives(CAMERA *cam);
+static void update_camera();
 static void clearVRAM();
 static void display();
 
@@ -42,8 +53,6 @@ int main() {
 		init_polygon(&polygon[i], -64, -64, 64, 64);
 		polygon[i].shape.tpage = init_tim();
 	}
-
-	set_primatives();
 	SetDispMask(1); // Show display
 
 	while (1) {
@@ -51,6 +60,7 @@ int main() {
 		// Swap buffer pointer
 		if (poly_ref != polygon) poly_ref = polygon;
 		else poly_ref++;
+		set_primatives(&cam);
 
 		// Reinitialise OT array
 		ClearOTag(&poly_ref->tag, 1);
@@ -63,6 +73,7 @@ int main() {
 		RotTransPers(&poly_ref->x[1], (long *)&poly_ref->shape.x1, &p, &flag);
 		RotTransPers(&poly_ref->x[2], (long *)&poly_ref->shape.x2, &p, &flag);
 		RotTransPers(&poly_ref->x[3], (long *)&poly_ref->shape.x3, &p, &flag);
+		
 
 		// Add polygon to OT
 		AddPrim(&poly_ref->tag, &poly_ref->shape);
@@ -83,6 +94,7 @@ static void init(int x, int y, int z) {
 	ResetCallback();
 	ResetGraph(0);
 	InitGeom();
+	PadInit(0);
 	clearVRAM();
 	SetVideoMode(VIDEO_TYPE);
 
@@ -98,6 +110,7 @@ static void init_polygon(OT_ELEMENT* polygon, int x1, int y1, int x2, int y2) {
 	setVector(&polygon->x[2], x1, y2, 0);
 	setVector(&polygon->x[3], x2, y2, 0);
 
+	polygon->draw.isbg = 1; // Important (see without!)
 	setRGB0(&polygon->draw, 0, 0, 0);
 	SetPolyFT4(&polygon->shape);
 	SetShadeTex(&polygon->shape, 2);
@@ -121,17 +134,40 @@ static u_short init_tim() {
 }
 
 // Sets rotation and translation matricies
-static void set_primatives() {
+static void set_primatives(CAMERA *cam) {
 
-	// SEt rotation angle, translation vector and buffer matrix
-	static SVECTOR ang = {0, 0, 0};
-	static VECTOR vec = {0, 0, 1024};
-	static MATRIX m;
+	VECTOR vec;
+	update_camera();
 
-	RotMatrix(&ang, &m);
-	TransMatrix(&m, &vec);
-	SetRotMatrix(&m);
-	SetTransMatrix(&m);
+	RotMatrix(&cam->ang, &cam->m);
+	ApplyMatrixLV(&cam->m, &cam->pos, &vec);
+	TransMatrix(&cam->m, &vec);
+	SetRotMatrix(&cam->m);
+	SetTransMatrix(&cam->m);
+}
+
+void update_camera() {
+
+	// Read controller input
+	u_short pad_read = PadRead(1);
+	if (pad_read) {
+		// UP & DOWN
+		if(pad_read & PADLup) cam.pos.vz -= 25;
+		else if(pad_read & PADLdown) cam.pos.vz += 25;
+
+		// LEFT & RIGHT
+		if(pad_read & PADLleft) cam.pan += 2;
+		else if(pad_read & PADLright) cam.pan -= 2;
+
+		// L1 & R2
+		if(pad_read & PADL1) cam.pos.vx += 5;
+		else if(pad_read & PADR1) cam.pos.vx -= 5;
+
+		cam.ang.vy += cam.pan;
+	}
+
+	if (cam.pan > -0.02 || cam.pan < 0.02)
+		cam.pan *= 0.9; // Reduce panning speed
 }
 
 static void clearVRAM() {
